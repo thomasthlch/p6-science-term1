@@ -15,10 +15,9 @@ import { authErrorText, finishRedirectSignIn, loadCloudSave, saveCloudSave, sign
 import {
   BOARD_LIMIT_MS,
   BOARD_ROUND,
-  SOLO_FIRST_COINS,
-  SOLO_RETRY_COINS,
+  SOLO_LIMIT_MS,
   SOLO_ROUND,
-  boardCoins,
+  boardScore,
   isCorrect,
   mergeAnimals,
   newUid,
@@ -50,8 +49,11 @@ interface SoloState {
   totalCount: number;
   coins: number;
   lastCorrect: boolean;
+  lastGain: number;
+  lastElapsed: number;
   note: string;
   roundCounted: boolean;
+  startedAt: number;
 }
 
 interface BoardPlayer {
@@ -86,8 +88,10 @@ interface ResetModal {
 }
 
 interface HatchState {
-  phase: 'wobble' | 'reveal';
+  phase: 'wobble' | 'reveal' | 'deal';
   pulls: Species[];
+  cursor: number;
+  face: 'back' | 'front';
 }
 
 interface Account {
@@ -174,6 +178,7 @@ class App {
   private modal: AnimalModal | ResetModal | null = null;
   private hatch: HatchState | null = null;
   private timer: number | null = null;
+  private soloTimer: number | null = null;
   private hatchTimer: number | null = null;
   private renderedCoins = -1;
   private account: Account | null = null;
@@ -206,6 +211,7 @@ class App {
     const next = parseHash(location.hash);
     if (next === this.route) return;
     this.clearTimer();
+    this.clearSoloTimer();
     this.clearHatchTimer();
     this.solo = null;
     this.board = null;
@@ -286,6 +292,7 @@ class App {
     else if (action === 'sign-in') void this.signIn();
     else if (action === 'sign-out') void this.signOutAccount();
     else if (action === 'close-hatch') {
+      this.clearHatchTimer();
       this.hatch = null;
       this.render();
     }
@@ -306,6 +313,7 @@ class App {
 
   private go(route: RouteName): void {
     this.clearTimer();
+    this.clearSoloTimer();
     this.clearHatchTimer();
     if (route !== 'solo') this.solo = null;
     if (route !== 'board') this.board = null;
@@ -343,12 +351,16 @@ class App {
       totalCount: 0,
       coins: 0,
       lastCorrect: false,
+      lastGain: 0,
+      lastElapsed: 0,
       note: '',
       roundCounted: false,
+      startedAt: Date.now(),
     };
     this.route = 'solo';
     if (location.hash !== '#/solo') location.hash = '#/solo';
     this.render();
+    this.armSoloTimer();
   }
 
   private chooseSolo(id: string): void {
@@ -382,9 +394,13 @@ class App {
     if (!solo || solo.phase !== 'answer') return;
     const question = solo.queue[solo.cursor];
     if (!question) return;
+    this.clearSoloTimer();
     const correct = isCorrect(question, solo.picked);
-    const gain = soloCoins(correct, solo.retrying);
+    const elapsed = Date.now() - solo.startedAt;
+    const gain = soloCoins(elapsed, SOLO_LIMIT_MS, correct);
     solo.lastCorrect = correct;
+    solo.lastGain = gain;
+    solo.lastElapsed = elapsed;
     solo.totalCount += 1;
     solo.coins += gain;
     solo.phase = 'explain';
@@ -420,7 +436,9 @@ class App {
     solo.picked = [];
     solo.note = '';
     solo.phase = 'answer';
+    solo.startedAt = Date.now();
     this.render();
+    this.armSoloTimer();
   }
 
   private retrySolo(): void {
@@ -437,7 +455,9 @@ class App {
     solo.picked = [];
     solo.note = '';
     solo.phase = 'answer';
+    solo.startedAt = Date.now();
     this.render();
+    this.armSoloTimer();
   }
 
   private startBoard(): void {
@@ -570,14 +590,10 @@ class App {
       }
       const correct = isCorrect(question, player.picked);
       player.correct = correct;
-      const gain = boardCoins(player.elapsedMs ?? BOARD_LIMIT_MS, BOARD_LIMIT_MS, correct);
+      const gain = boardScore(player.elapsedMs ?? BOARD_LIMIT_MS, BOARD_LIMIT_MS, correct);
       player.gained = gain;
       player.total += gain;
-      this.save.coins += gain;
-      this.save.stats.answered += 1;
-      if (correct) this.save.stats.correct += 1;
     }
-    this.persist();
     this.render();
   }
 
@@ -644,14 +660,77 @@ class App {
     }
     this.save.stats.pulls += count;
     this.persist();
-    this.hatch = { phase: 'wobble', pulls };
-    this.render();
     this.clearHatchTimer();
+    if (kind === 'ten') {
+      this.hatch = { phase: 'deal', pulls, cursor: 0, face: 'back' };
+      this.render();
+      this.scheduleDeal();
+      return;
+    }
+    this.hatch = { phase: 'wobble', pulls, cursor: 0, face: 'front' };
+    this.render();
     this.hatchTimer = window.setTimeout(() => {
       if (!this.hatch) return;
       this.hatch.phase = 'reveal';
       this.render();
     }, 1100);
+  }
+
+  private scheduleDeal(): void {
+    const hatch = this.hatch;
+    if (!hatch || hatch.phase !== 'deal') return;
+    const species = hatch.pulls[hatch.cursor];
+    if (!species) return;
+    if (hatch.face === 'back') {
+      const wait = species.rarity === 'super' ? 1500 : species.rarity === 'rare' ? 900 : 480;
+      this.hatchTimer = window.setTimeout(() => {
+        if (!this.hatch || this.hatch.phase !== 'deal') return;
+        this.hatch.face = 'front';
+        this.render();
+        this.scheduleDeal();
+      }, wait);
+      return;
+    }
+    if (hatch.cursor + 1 >= hatch.pulls.length) {
+      this.hatchTimer = window.setTimeout(() => {
+        if (!this.hatch || this.hatch.phase !== 'deal') return;
+        this.hatch.phase = 'reveal';
+        this.render();
+      }, 420);
+      return;
+    }
+    this.hatchTimer = window.setTimeout(() => {
+      if (!this.hatch || this.hatch.phase !== 'deal') return;
+      this.hatch.cursor += 1;
+      this.hatch.face = 'back';
+      this.render();
+      this.scheduleDeal();
+    }, 380);
+  }
+
+  private armSoloTimer(): void {
+    this.clearSoloTimer();
+    const solo = this.solo;
+    if (!solo || solo.phase !== 'answer') return;
+    this.soloTimer = window.setInterval(() => this.tickSolo(), 100);
+  }
+
+  private tickSolo(): void {
+    const solo = this.solo;
+    if (!solo || solo.phase !== 'answer') return;
+    const left = SOLO_LIMIT_MS - (Date.now() - solo.startedAt);
+    const sec = Math.max(0, Math.ceil(left / 1000));
+    const label = this.root.querySelector('[data-solo-timer]');
+    if (label) label.textContent = String(sec);
+    this.root.querySelector('.solo-timer')?.classList.toggle('urgent', sec <= 5);
+    if (left <= 0) this.revealSolo();
+  }
+
+  private soloSecondsLeft(): number {
+    const solo = this.solo;
+    if (!solo) return Math.ceil(SOLO_LIMIT_MS / 1000);
+    const left = SOLO_LIMIT_MS - (Date.now() - solo.startedAt);
+    return Math.max(0, Math.ceil(left / 1000));
   }
 
   private persist(): void {
@@ -780,6 +859,13 @@ class App {
     }
   }
 
+  private clearSoloTimer(): void {
+    if (this.soloTimer !== null) {
+      window.clearInterval(this.soloTimer);
+      this.soloTimer = null;
+    }
+  }
+
   private clearHatchTimer(): void {
     if (this.hatchTimer !== null) {
       window.clearTimeout(this.hatchTimer);
@@ -794,7 +880,7 @@ class App {
     const bump = this.renderedCoins >= 0 && this.save.coins > this.renderedCoins;
     this.renderedCoins = this.save.coins;
     if (playing && this.board) {
-      this.root.innerHTML = this.boardPlayHtml(this.board, bump);
+      this.root.innerHTML = this.boardPlayHtml(this.board);
       return;
     }
     this.root.innerHTML = `<div class="app">${this.topbar(bump)}<main class="wrap">${this.page()}</main></div>${this.modalHtml()}`;
@@ -840,12 +926,12 @@ class App {
         <button class="mode-card solo" type="button" data-action="go-solo">
           <span class="mode-kicker">自己的節奏</span>
           <strong>個人溫習</strong>
-          <span>選一個課題或混合，每輪 ${SOLO_ROUND} 題。答完即時看短解說，未掌握的題目可以再練。</span>
+          <span>每題有倒數。答得愈快，科學幣愈多。答錯沒有科學幣，仍會看短解說。</span>
         </button>
         <button class="mode-card board" type="button" data-action="go-board">
           <span class="mode-kicker">智慧板 · 三人同時</span>
           <strong>白板三人</strong>
-          <span>同一題、三欄同時作答。答得又快又準，科學幣愈多。適合投到大螢幕。</span>
+          <span>同一題、三欄同時作答。愈快答對分數愈高。這局不發科學幣。</span>
         </button>
       </div>
       <div class="quick-grid">
@@ -855,7 +941,7 @@ class App {
       <div class="parade" aria-hidden="true">${parade}</div>
       <ol class="steps">
         <li>選擇個人溫習或白板三人。</li>
-        <li>答對得到科學幣，錯了會看到簡短解說。</li>
+        <li>個人溫習答得愈快，科學幣愈多。白板只計分數。</li>
         <li>三隻完全相同的一星合成二星，三隻二星合成三星。</li>
       </ol>
       <p class="note">題庫 ${QUESTIONS.length} 題 · 已掌握 ${this.save.solo.mastered.length} 題 · 沒有班內排行榜 · 名字只在這一局顯示</p>
@@ -879,7 +965,7 @@ class App {
   private soloSetupHtml(): string {
     return `<section class="panel" data-testid="solo-setup">
       <h2>個人溫習</h2>
-      <p class="lede">每輪 ${SOLO_ROUND} 題。第一次答對得 ${SOLO_FIRST_COINS} 科學幣，再練時答對得 ${SOLO_RETRY_COINS} 科學幣。</p>
+      <p class="lede">每輪 ${SOLO_ROUND} 題，每題 ${SOLO_LIMIT_MS / 1000} 秒。答得愈快，科學幣愈多。答錯或時間到都沒有科學幣。</p>
       <label class="field">這一局顯示的名字（可留空）
         <input data-field="solo-name" maxlength="8" placeholder="例如：小明" value="${esc(this.soloName)}" />
       </label>
@@ -905,11 +991,13 @@ class App {
         </button>`;
       })
       .join('');
-    const gain = revealed ? soloCoins(solo.lastCorrect, solo.retrying) : 0;
+    const gain = revealed ? solo.lastGain : 0;
+    const speed = revealed && solo.lastCorrect ? soloSpeedWord(solo.lastElapsed, SOLO_LIMIT_MS) : '';
     return `<section class="panel play" data-testid="solo-question" data-qid="${question.id}">
       <div class="play-top">
         <span class="tag">${esc(topicName(solo.topic))}${solo.retrying ? ' · 再練' : ''}</span>
         <span class="progress">第 ${solo.cursor + 1} / ${solo.queue.length} 題</span>
+        <span class="solo-timer ${this.soloSecondsLeft() <= 5 ? 'urgent' : ''}"><strong data-solo-timer>${revealed ? '✓' : this.soloSecondsLeft()}</strong></span>
         <span class="who">${esc(solo.name)}</span>
       </div>
       <h2 class="prompt">${esc(question.prompt)}</h2>
@@ -924,9 +1012,9 @@ class App {
       ${
         revealed
           ? `<div class="explain ${solo.lastCorrect ? 'good' : 'soft'}" data-testid="explain">
-              <strong>${solo.lastCorrect ? '答對了！' : '差一點點'}</strong>
+              <strong>${solo.lastCorrect ? speed : '差一點點'}</strong>
               <p>${esc(question.explain)}</p>
-              ${gain ? `<p class="gain">科學幣 +${gain}</p>` : '<p class="gain soft">這題先記下解說，等一下可以再練。</p>'}
+              ${gain ? `<p class="gain" data-testid="coin-gain">科學幣 +${gain}</p>` : '<p class="gain soft">這題沒有科學幣。看看解說，等一下可以再練。</p>'}
               <button class="primary" type="button" data-action="solo-next">${last ? '看這一輪結果' : '下一題'}</button>
             </div>`
           : ''
@@ -959,7 +1047,7 @@ class App {
   private boardSetupHtml(): string {
     return `<section class="panel" data-testid="board-setup">
       <h2>白板三人</h2>
-      <p class="lede">三位同學同時看同一題，在自己的一欄作答。愈快答對，科學幣愈多。名字只在這一局顯示。</p>
+      <p class="lede">三位同學同時看同一題，在自己的一欄作答。愈快答對，分數愈高。這局不發科學幣。名字只在這一局顯示。</p>
       <div class="setup-names">
         ${[0, 1, 2]
           .map(
@@ -984,7 +1072,7 @@ class App {
     </section>`;
   }
 
-  private boardPlayHtml(board: BoardState, bump: boolean): string {
+  private boardPlayHtml(board: BoardState): string {
     const question = board.questions[board.index];
     if (!question) return '';
     const revealed = board.phase === 'explain';
@@ -1010,7 +1098,7 @@ class App {
         return `<section class="col c${col}" data-col="${col}">
           <header class="col-h">
             <span class="pname">${esc(player.name)}</span>
-            <span class="pscore">${player.total}</span>
+            <span class="pscore">${player.total}<small>分</small></span>
             ${player.locked && !revealed ? '<span class="ribbon">已作答</span>' : ''}
           </header>
           <div class="col-options">
@@ -1032,7 +1120,7 @@ class App {
         <button class="tiny" type="button" data-action="go-home">主頁</button>
         <div class="board-title">
           <strong>白板三人</strong>
-          <span>第 ${board.index + 1} / ${board.questions.length} 題 · ${esc(topicName(board.topic))}</span>
+          <span>第 ${board.index + 1} / ${board.questions.length} 題 · ${esc(topicName(board.topic))} · 只計分數</span>
         </div>
         <div class="timer ${revealed ? 'done' : ''}">
           <svg class="timer-svg" viewBox="0 0 100 100" aria-hidden="true">
@@ -1041,7 +1129,6 @@ class App {
           </svg>
           <strong data-timer>${revealed ? '✓' : '30'}</strong>
         </div>
-        <span class="coin-pill ${bump ? 'bump' : ''}" data-testid="coins">${coinSvg()}<strong>${this.save.coins}</strong></span>
       </header>
       <div class="board-mid">
         <h2 class="board-q">${esc(question.prompt)}</h2>
@@ -1066,7 +1153,7 @@ class App {
       const elapsed = player.elapsedMs ?? BOARD_LIMIT_MS;
       const ratio = elapsed / BOARD_LIMIT_MS;
       const word = ratio < 0.35 ? '好快！' : ratio < 0.7 ? '又快又準' : '答對了';
-      return `<div class="col-result good"><strong>${word}</strong><span>科學幣 +${player.gained}</span></div>`;
+      return `<div class="col-result good"><strong>${word}</strong><span>分數 +${player.gained}</span></div>`;
     }
     return `<div class="col-result soft"><strong>差一點點</strong><span>看看上面的解說就好。</span></div>`;
   }
@@ -1077,13 +1164,13 @@ class App {
         (player, index) => `<article class="done-card c${index}">
           <h3>${esc(player.name)}</h3>
           <p class="score-num">${player.total}</p>
-          <span>本局科學幣</span>
+          <span>本局分數</span>
         </article>`,
       )
       .join('');
     return `<section class="panel summary" data-testid="board-done">
       <h2>這一局完成了</h2>
-      <p class="lede">三位都辛苦了。科學幣已存好，可以一起去孵蛋。</p>
+      <p class="lede">三位都辛苦了。這局只計分數，不會獲得科學幣。</p>
       <div class="done-grid">${cards}</div>
       <div class="row-actions">
         <button class="primary" type="button" data-action="start-board">再玩一局</button>
@@ -1188,7 +1275,34 @@ class App {
     </section>`;
   }
 
+  private dealHtml(hatch: HatchState): string {
+    const cards = hatch.pulls
+      .map((species, index) => {
+        if (index > hatch.cursor) return `<div class="flip-slot"></div>`;
+        const flipped = index < hatch.cursor || (index === hatch.cursor && hatch.face === 'front');
+        const current = index === hatch.cursor && hatch.face === 'back';
+        const just = index === hatch.cursor && hatch.face === 'front';
+        return `<article class="flip-card ${species.rarity} ${flipped ? 'is-flipped' : 'is-back'} ${current ? 'is-current' : ''} ${just ? 'is-just' : ''}" data-rarity="${species.rarity}" data-face="${flipped ? 'front' : 'back'}">
+          <div class="flip-inner">
+            <div class="face back"><span>？</span></div>
+            <div class="face front">
+              ${animalSvg(species)}
+              <strong>${esc(species.name)}</strong>
+              <em>${RARITY_LABEL[species.rarity]}</em>
+            </div>
+          </div>
+        </article>`;
+      })
+      .join('');
+    return `<section class="hatch deal" data-testid="deal">
+      <h2>十連抽</h2>
+      <p class="lede">白卡是普通，藍卡是稀有，金卡是超稀有。先看顏色，再猜是誰。</p>
+      <div class="flip-grid">${cards}</div>
+    </section>`;
+  }
+
   private hatchHtml(hatch: HatchState): string {
+    if (hatch.phase === 'deal') return this.dealHtml(hatch);
     if (hatch.phase === 'wobble') {
       return `<section class="hatch wobble egg-common" data-testid="hatch">
         <div class="egg-graphic">${eggSvg()}</div>
@@ -1295,4 +1409,11 @@ class App {
 
 function mysteryArt(): string {
   return `<div class="mystery" role="img" aria-label="尚未遇見的動物"><span class="mystery-mark">？</span></div>`;
+}
+
+function soloSpeedWord(elapsedMs: number, limitMs: number): string {
+  const ratio = elapsedMs / limitMs;
+  if (ratio < 0.25) return '好快！';
+  if (ratio < 0.55) return '不錯！';
+  return '答對了！';
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { POOL_WEIGHTS, PULL_COST, RARITY_LABEL, SPECIES, TEN_PULL_COST, TEN_PULL_COUNT, animalSvg, rollRarity, rollSpecies } from './animals';
-import { boardCoins, isCorrect, mergeAnimals, pickQuestions, soloCoins } from './logic';
+import { boardScore, isCorrect, mergeAnimals, pickQuestions, soloCoins } from './logic';
 import { QUESTIONS, bankStats } from './questions';
 import type { Question } from './types';
 
@@ -113,13 +113,15 @@ describe('rules', () => {
     expect(isCorrect(question, [...question.answer, 'a'])).toBe(false);
   });
 
-  it('pays more for a fast correct whiteboard answer', () => {
-    expect(boardCoins(0, 30000, true)).toBeGreaterThan(boardCoins(20000, 30000, true));
-    expect(boardCoins(20000, 30000, true)).toBeGreaterThan(0);
-    expect(boardCoins(1000, 30000, false)).toBe(0);
-    expect(soloCoins(true, false)).toBe(10);
-    expect(soloCoins(true, true)).toBe(5);
-    expect(soloCoins(false, false)).toBe(0);
+  it('pays more 科學幣 for a fast correct solo answer and none for a wrong one', () => {
+    expect(soloCoins(0, 30000, true)).toBeGreaterThan(soloCoins(20000, 30000, true));
+    expect(soloCoins(20000, 30000, true)).toBeGreaterThan(0);
+    expect(soloCoins(500, 30000, false)).toBe(0);
+  });
+
+  it('keeps a speed score in board mode without treating it as coins', () => {
+    expect(boardScore(0, 30000, true)).toBeGreaterThan(boardScore(20000, 30000, true));
+    expect(boardScore(1000, 30000, false)).toBe(0);
   });
 
   it('picks a mixed round without duplicate questions', () => {
