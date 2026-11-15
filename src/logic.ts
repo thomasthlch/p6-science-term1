@@ -12,8 +12,7 @@ export interface AnimalInst {
 export const SOLO_ROUND = 10;
 export const BOARD_ROUND = 8;
 export const BOARD_LIMIT_MS = 30_000;
-export const SOLO_FIRST_COINS = 10;
-export const SOLO_RETRY_COINS = 5;
+export const SOLO_LIMIT_MS = 30_000;
 
 export function shuffle<T>(list: readonly T[], rng: () => number = Math.random): T[] {
   const arr = [...list];
@@ -33,13 +32,16 @@ export function isCorrect(question: Question, picked: readonly string[]): boolea
   return picked.every((id) => need.has(id));
 }
 
-export function soloCoins(correct: boolean, retrying: boolean): number {
+/** Faster correct solo answers earn more 科學幣. Wrong answers earn nothing. About 4–20. */
+export function soloCoins(elapsedMs: number, limitMs: number, correct: boolean): number {
   if (!correct) return 0;
-  return retrying ? SOLO_RETRY_COINS : SOLO_FIRST_COINS;
+  const clamped = Math.min(limitMs, Math.max(0, elapsedMs));
+  const ratio = 1 - clamped / limitMs;
+  return Math.round(4 + ratio * 16);
 }
 
-/** Faster correct answers earn more. Wrong answers earn nothing. Range about 8–24. */
-export function boardCoins(elapsedMs: number, limitMs: number, correct: boolean): number {
+/** Session score only. Board mode does not award 科學幣. About 8–24. */
+export function boardScore(elapsedMs: number, limitMs: number, correct: boolean): number {
   if (!correct) return 0;
   const clamped = Math.min(limitMs, Math.max(0, elapsedMs));
   const ratio = 1 - clamped / limitMs;
