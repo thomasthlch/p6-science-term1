@@ -10,11 +10,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/three": "^0.170.0",
     "typescript": "~5.7.3",
     "vite": "^6.2.0",
     "vitest": "^3.0.9"
   },
   "dependencies": {
-    "firebase": "^11.10.0"
+    "firebase": "^11.10.0",
+    "three": "^0.170.0"
   }
 }

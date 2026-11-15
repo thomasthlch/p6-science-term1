@@ -1,6 +1,7 @@
 import { SPECIES } from './animals';
 import type { AnimalInst, Star } from './logic';
 import { QUESTIONS } from './questions';
+import { emptyPasture, mergePasture, normalizePasture, type PastureData } from './pasture';
 
 const KEY = 'p6sci.v1';
 const QUESTION_IDS = new Set(QUESTIONS.map((item) => item.id));
@@ -21,6 +22,7 @@ export interface SaveData {
     merges: number;
   };
   solo: SoloProgress;
+  pasture: PastureData;
 }
 
 export function emptySave(): SaveData {
@@ -30,6 +32,7 @@ export function emptySave(): SaveData {
     animals: [],
     stats: { correct: 0, answered: 0, pulls: 0, merges: 0 },
     solo: { mastered: [], rounds: 0 },
+    pasture: emptyPasture(),
   };
 }
 
@@ -60,6 +63,7 @@ export function normalizeSave(raw: unknown): SaveData | null {
   const mastered = Array.isArray(solo?.mastered)
     ? [...new Set(solo.mastered.filter((id): id is string => typeof id === 'string' && QUESTION_IDS.has(id)))]
     : [];
+  const ownedIds = new Set(animals.map((item) => item.speciesId));
   return {
     v: 1,
     coins: Math.max(0, Math.floor(Number(data.coins) || 0)),
@@ -74,6 +78,7 @@ export function normalizeSave(raw: unknown): SaveData | null {
       mastered,
       rounds: Math.max(0, Math.floor(Number(solo?.rounds) || 0)),
     },
+    pasture: normalizePasture(data.pasture, ownedIds, Date.now()),
   };
 }
 
@@ -85,10 +90,12 @@ export function mergeSaves(local: SaveData, cloud: SaveData | null): SaveData {
     const previous = byUid.get(animal.uid);
     if (!previous || animal.stars > previous.stars) byUid.set(animal.uid, { ...animal });
   }
+  const animals = [...byUid.values()];
+  const ownedIds = new Set(animals.map((item) => item.speciesId));
   return {
     v: 1,
     coins: Math.max(local.coins, cloud.coins),
-    animals: [...byUid.values()],
+    animals,
     stats: {
       correct: Math.max(local.stats.correct, cloud.stats.correct),
       answered: Math.max(local.stats.answered, cloud.stats.answered),
@@ -99,6 +106,7 @@ export function mergeSaves(local: SaveData, cloud: SaveData | null): SaveData {
       mastered: [...new Set([...cloud.solo.mastered, ...local.solo.mastered])],
       rounds: Math.max(local.solo.rounds, cloud.solo.rounds),
     },
+    pasture: mergePasture(local.pasture, cloud.pasture, ownedIds),
   };
 }
 
