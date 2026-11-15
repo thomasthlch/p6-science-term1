@@ -214,7 +214,48 @@ h1, h2, h3, p { margin-top: 0; }
 .species-card h3 { margin: 4px 0; font-size: 1.25rem; }
 .species-meta .totem, .missing { color: var(--muted); margin: 0 0 8px; }
 .art .animal-svg { width: 100%; height: auto; }
-.species-card.locked .art { filter: grayscale(1) brightness(1.15); opacity: 0.55; }
+.mystery {
+  aspect-ratio: 1;
+  margin: 8px 8px 0;
+  border-radius: 28px;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 46%, #efe2d2 0 34%, transparent 35%),
+    linear-gradient(#f7f1e8, #efe4d4);
+  border: 3px dashed #d7c2a6;
+}
+.mystery-mark { font-size: 4.4rem; font-weight: 900; color: #b08968; line-height: 1; }
+.species-card.locked h3 { letter-spacing: 0.18em; color: #8d6b52; }
+.rarity.unknown { background: #f3ebe1; color: #8d6b52; }
+.login-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0 4px;
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: #fff;
+  border: 3px solid #f0d7b0;
+}
+.login-banner p { margin: 0; flex: 1; min-width: 220px; }
+.login-banner.synced { background: #eefaf3; border-color: #b7e3cf; }
+.account { display: inline-flex; flex-direction: column; line-height: 1.1; font-weight: 800; }
+.account small { color: var(--muted); font-size: 0.75rem; }
+.gacha-shop { display: grid; justify-items: center; gap: 16px; margin-top: 8px; }
+.gacha-shop .egg-graphic { width: min(220px, 70vw); }
+.gacha-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.primary.ten { background: linear-gradient(180deg, #3cba8b, #2f9d74); box-shadow: 0 5px 0 var(--green-d); }
+.pull-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  width: min(920px, 100%);
+  margin: 8px auto 16px;
+}
+.pull-card { background: #fff; border: 3px solid var(--line); border-radius: 18px; padding: 8px; text-align: center; }
+.pull-card .art { max-width: 140px; margin: 0 auto; }
 .species-card.best3, .modal.best3 {
   border-color: #f0b429;
   box-shadow: 0 0 0 4px rgba(240, 180, 41, 0.35), 0 16px 40px rgba(210, 150, 30, 0.25);

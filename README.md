@@ -13,7 +13,20 @@
 
 - **個人溫習**：選一個課題或混合，每輪 10 題。作答後即時看到短解說。未掌握的題目可以再練。答對獲得科學幣。
 - **白板三人**：三欄同時答同一題，適合 1920×1080 智慧板全螢幕。用 pointer events 支援多人同時觸控，版面固定為三欄。愈快答對，科學幣愈多。答錯只會溫柔提示，然後看短解說。
-- **動物飼養場與孵蛋**：科學幣用來孵蛋。稀有度是普通、稀有、超稀有（蛋殼顏色和光暈不同）。三隻相同的一星合成二星，三隻相同的二星合成三星。進度只存在這部裝置的 `localStorage`，沒有班內排行榜，也沒有 Firebase。名字只在該局顯示。
+- **動物飼養場與孵蛋**：只有一種蛋。單抽 10 科學幣，十連抽 100 科學幣並多送 1 抽（共 11 隻）。孵出的動物仍分普通 70%、稀有 20%、超稀有 10%。未遇見的動物在飼養場顯示為「？」，不會露出真身。三隻相同的一星合成二星，三隻相同的二星合成三星。
+- **登入**：可以不登入，進度只留在這部裝置。用 Google 登入後，科學幣、動物和已掌握的題目會跟住帳號。登入時會把這部裝置和雲端的進度合併，不會刪走較多的那一邊。沒有班內排行榜。名字只在該局顯示。
+
+## Firebase
+
+網站使用老師現有的 Firebase 專案 `mrli-thlch`（與 [mrli-thlch.web.app](https://mrli-thlch.web.app) 相同）。程式只放公開的 Web 設定，沒有服務帳戶金鑰。
+
+同學的進度存在 Firestore `p6science/{uid}`。請在 Firebase Console 完成這些步驟，雲端同步才會成功：
+
+1. Authentication → Sign-in method：確認已啟用 **Google**。
+2. Authentication → Settings → Authorized domains：加入 `thomasthlch.github.io`。`localhost` 通常已在清單內。
+3. Firestore → Rules：把 `firebase/p6science.rules` 裡面的 `match /p6science/{userId}` **貼進現有規則**，不要整份取代。控制台仍使用 `dashboards/master_dashboard` 和 `eservice/courses`。
+4. 規則的意思是：已登入的人只能讀寫自己的文件。
+5. 若 API 金鑰有 HTTP referrer 限制，請一併允許 `https://thomasthlch.github.io/*`。
 
 ## 題庫
 
