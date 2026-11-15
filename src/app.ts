@@ -29,9 +29,11 @@ import {
 } from './logic';
 import { QUESTIONS } from './questions';
 import { emptySave, loadSave, mergeSaves, writeSave, type SaveData } from './storage';
+import { PastureView } from './pasture-view';
+import { applyCare, ensurePlacedPets, togglePlacement, type CareAction } from './pasture';
 import { TOPIC_LABEL, TOPIC_ORDER, type Choice, type Question, type TopicId } from './types';
 
-type RouteName = 'home' | 'solo' | 'board' | 'farm' | 'gacha';
+type RouteName = 'home' | 'solo' | 'board' | 'farm' | 'gacha' | 'pasture';
 type TopicPick = TopicId | 'mix';
 type FarmFilter = 'all' | 'owned' | 'missing' | Rarity;
 
@@ -118,6 +120,7 @@ function parseHash(hash: string): RouteName {
   const path = hash.replace(/^#/, '') || '/';
   if (path.startsWith('/board')) return 'board';
   if (path.startsWith('/solo')) return 'solo';
+  if (path.startsWith('/pasture')) return 'pasture';
   if (path.startsWith('/farm')) return 'farm';
   if (path.startsWith('/gacha')) return 'gacha';
   return 'home';
@@ -187,6 +190,11 @@ class App {
   private authError = '';
   private authBusy = false;
   private cloudTimer: number | null = null;
+  private pastureMode: 'pick' | 'yard' = 'pick';
+  private yard: PastureView | null = null;
+  private draftPlace: string[] = [];
+  private selectedSpecies: string | null = null;
+  private careNote = '';
 
   constructor(private root: HTMLElement) {
     this.save = loadSave();
@@ -213,6 +221,7 @@ class App {
     this.clearTimer();
     this.clearSoloTimer();
     this.clearHatchTimer();
+    this.disposeYard();
     this.solo = null;
     this.board = null;
     this.hatch = null;
@@ -255,6 +264,7 @@ class App {
     else if (action === 'go-board') this.go('board');
     else if (action === 'go-farm') this.go('farm');
     else if (action === 'go-gacha') this.go('gacha');
+    else if (action === 'go-pasture') this.openPasture();
     else if (action === 'topic-solo') this.setTopic('solo', actionEl.dataset.topic);
     else if (action === 'topic-board') this.setTopic('board', actionEl.dataset.topic);
     else if (action === 'board-count') {
@@ -279,6 +289,11 @@ class App {
       }
     } else if (action === 'open-animal') this.openAnimal(actionEl.dataset.species ?? '');
     else if (action === 'merge') this.merge(actionEl.dataset.species ?? '', Number(actionEl.dataset.stars));
+    else if (action === 'toggle-place') this.togglePlace(actionEl.dataset.species ?? '');
+    else if (action === 'confirm-place') this.confirmPlace();
+    else if (action === 'change-place') this.changePlace();
+    else if (action === 'care') this.care((actionEl.dataset.care ?? '') as CareAction);
+    else if (action === 'come-closer') this.comeCloser();
     else if (action === 'ask-reset') {
       this.modal = { kind: 'reset' };
       this.render();
@@ -318,6 +333,7 @@ class App {
     if (route !== 'solo') this.solo = null;
     if (route !== 'board') this.board = null;
     if (route !== 'gacha') this.hatch = null;
+    if (route !== 'pasture') this.disposeYard();
     this.modal = null;
     this.route = route;
     const hash = route === 'home' ? '#/' : `#/${route}`;
@@ -759,7 +775,8 @@ class App {
         this.authError = authErrorText(error);
       }
     }
-    if (!document.body.classList.contains('mode-board')) this.render();
+    if (this.route === 'pasture' || document.body.classList.contains('mode-board')) return;
+    this.render();
   }
 
   private applyPreviewAccount(): void {
@@ -884,6 +901,7 @@ class App {
       return;
     }
     this.root.innerHTML = `<div class="app">${this.topbar(bump)}<main class="wrap">${this.page()}</main></div>${this.modalHtml()}`;
+    if (this.route === 'pasture' && this.pastureMode === 'yard') this.mountYard();
   }
 
   private topbar(bump: boolean): string {
@@ -905,6 +923,7 @@ class App {
     if (this.route === 'solo') return this.solo ? this.soloPlayHtml(this.solo) : this.soloSetupHtml();
     if (this.route === 'board') return this.board && this.board.phase === 'done' ? this.boardDoneHtml(this.board) : this.boardSetupHtml();
     if (this.route === 'farm') return this.farmHtml();
+    if (this.route === 'pasture') return this.pastureHtml();
     if (this.route === 'gacha') return this.gachaHtml();
     return this.homeHtml();
   }
@@ -1189,6 +1208,191 @@ class App {
     </section>`;
   }
 
+  private openPasture(): void {
+    const owned = new Set(this.save.animals.map((item) => item.speciesId));
+    this.draftPlace = this.save.pasture.placed.filter((id) => owned.has(id)).slice(0, 3);
+    this.pastureMode = this.draftPlace.length > 0 ? 'yard' : 'pick';
+    this.selectedSpecies = this.draftPlace[0] ?? null;
+    this.careNote = '';
+    this.go('pasture');
+  }
+
+  private togglePlace(speciesId: string): void {
+    const owned = this.save.animals.some((item) => item.speciesId === speciesId);
+    this.draftPlace = togglePlacement(this.draftPlace, speciesId, owned);
+    this.render();
+  }
+
+  private confirmPlace(): void {
+    if (this.draftPlace.length === 0) return;
+    const now = Date.now();
+    const pets = ensurePlacedPets({ placed: this.draftPlace, pets: this.save.pasture.pets }, now);
+    const rest = this.save.pasture.pets.filter((pet) => !this.draftPlace.includes(pet.speciesId));
+    this.save.pasture = { placed: [...this.draftPlace], pets: [...rest, ...pets] };
+    this.selectedSpecies = this.draftPlace[0] ?? null;
+    this.pastureMode = 'yard';
+    this.careNote = '點動物再點草地，牠們會走過去。';
+    this.persist();
+    this.render();
+  }
+
+  private changePlace(): void {
+    this.disposeYard();
+    this.draftPlace = [...this.save.pasture.placed];
+    this.pastureMode = 'pick';
+    this.render();
+  }
+
+  private care(action: CareAction): void {
+    if (action !== 'feed' && action !== 'pet' && action !== 'clean') return;
+    const speciesId = this.selectedSpecies;
+    if (!speciesId) {
+      this.careNote = '先點選草地上的一隻動物。';
+      this.paintCare();
+      return;
+    }
+    const now = Date.now();
+    const current = ensurePlacedPets(this.save.pasture, now).find((pet) => pet.speciesId === speciesId);
+    if (!current) return;
+    const result = applyCare(current, action, now);
+    const rest = this.save.pasture.pets.filter((pet) => pet.speciesId !== speciesId);
+    this.save.pasture = { ...this.save.pasture, pets: [...rest, result.pet] };
+    this.persist();
+    this.yard?.setFriend(speciesId, result.pet.friend);
+    if (result.celebrated) {
+      this.careNote = `${speciesById(speciesId)?.name ?? '小動物'} 成為好朋友了！`;
+      this.yard?.celebrate(speciesId);
+    } else if (action === 'feed') this.careNote = '吃得開心。';
+    else if (action === 'pet') this.careNote = '被摸得很舒服。';
+    else this.careNote = '身上乾淨了。';
+    this.paintCare();
+  }
+
+  private comeCloser(): void {
+    if (this.selectedSpecies) this.yard?.comeCloser(this.selectedSpecies);
+  }
+
+  private mountYard(): void {
+    this.disposeYard();
+    const host = this.root.querySelector<HTMLElement>('#pasture-mount');
+    if (!host) return;
+    const now = Date.now();
+    const pets = ensurePlacedPets(this.save.pasture, now);
+    const rest = this.save.pasture.pets.filter((pet) => !this.save.pasture.placed.includes(pet.speciesId));
+    this.save.pasture = { ...this.save.pasture, pets: [...rest, ...pets] };
+    this.persist();
+    try {
+      this.yard = new PastureView(host, pets, {
+        onSelect: (speciesId) => {
+          this.selectedSpecies = speciesId;
+          this.paintCare();
+        },
+        onPose: (speciesId, x, z, rot) => {
+          const pet = this.save.pasture.pets.find((item) => item.speciesId === speciesId);
+          if (!pet) return;
+          pet.x = x;
+          pet.z = z;
+          pet.rot = rot;
+          this.persist();
+        },
+      });
+    } catch {
+      host.textContent = '這部裝置暫時未能顯示 3D 牧場。';
+    }
+    this.paintCare();
+  }
+
+  private paintCare(): void {
+    const pet = this.save.pasture.pets.find((item) => item.speciesId === this.selectedSpecies);
+    const name = this.root.querySelector('[data-care-name]');
+    if (name) name.textContent = pet ? (speciesById(pet.speciesId)?.name ?? '小動物') : '先點一隻動物';
+    for (const key of ['hunger', 'mood', 'cleanliness', 'affection'] as const) {
+      const bar = this.root.querySelector<HTMLElement>(`[data-meter="${key}"]`);
+      if (bar) bar.style.width = `${pet ? pet[key] : 0}%`;
+    }
+    const affection = this.root.querySelector('[data-testid="affection"]');
+    if (affection) affection.textContent = pet ? String(pet.affection) : '0';
+    const note = this.root.querySelector('[data-care-note]');
+    if (note) note.textContent = this.careNote;
+    const friend = this.root.querySelector('[data-friend]');
+    if (friend) friend.textContent = pet?.friend ? '好朋友' : '';
+  }
+
+  private disposeYard(): void {
+    this.yard?.dispose();
+    this.yard = null;
+  }
+
+  private pastureHtml(): string {
+    return this.pastureMode === 'yard' ? this.yardHtml() : this.pickHtml();
+  }
+
+  private pickHtml(): string {
+    const owned = new Set(this.save.animals.map((item) => item.speciesId));
+    const ordered = [...SPECIES].sort((a, b) => Number(owned.has(b.id)) - Number(owned.has(a.id)));
+    const cards = ordered
+      .map((species) => {
+        const have = owned.has(species.id);
+        const on = this.draftPlace.includes(species.id);
+        if (!have) {
+          return `<article class="species-card locked" data-testid="place-${species.id}">
+            <div class="art">${mysteryArt()}</div>
+            <div class="species-meta"><span class="rarity unknown">未知</span><h3>？？？</h3><p class="missing">尚未遇見，不能放</p></div>
+          </article>`;
+        }
+        return `<button type="button" class="species-card pick-card ${on ? 'picked' : ''}" data-action="toggle-place" data-species="${species.id}" data-testid="place-${species.id}">
+          <div class="art">${animalSvg(species)}</div>
+          <div class="species-meta"><h3>${esc(species.name)}</h3><p>${on ? '已選' : '點選放到牧場'}</p></div>
+        </button>`;
+      })
+      .join('');
+    return `<section class="farm" data-testid="pasture-pick">
+      <div class="farm-head">
+        <div>
+          <h2>選擇最多 3 隻</h2>
+          <p class="lede">只有已經遇見的動物可以放到 3D 牧場。尚未遇見的仍是「？」。</p>
+        </div>
+      </div>
+      <div class="farm-grid">${cards}</div>
+      <div class="row-actions">
+        <button class="primary" type="button" data-action="confirm-place" data-testid="confirm-place" ${this.draftPlace.length === 0 ? 'disabled' : ''}>放到草地上（${this.draftPlace.length}/3）</button>
+        <button class="ghost" type="button" data-action="go-farm">返回飼養場</button>
+      </div>
+    </section>`;
+  }
+
+  private yardHtml(): string {
+    const pet = this.save.pasture.pets.find((item) => item.speciesId === this.selectedSpecies);
+    return `<section data-testid="pasture-yard">
+      <div class="farm-head">
+        <div>
+          <h2>3D 牧場</h2>
+          <p class="lede">拖動或點草地，動物會走過去並轉身。照顧會改變飽肚、心情、清潔和好感，但科學幣仍然主要來自個人溫習。</p>
+        </div>
+        <button class="ghost" type="button" data-action="change-place">更換動物</button>
+      </div>
+      <div id="pasture-mount" class="pasture-stage"></div>
+      <div class="care-panel" data-testid="care-panel">
+        <div class="care-title">
+          <strong data-care-name>${esc(pet ? (speciesById(pet.speciesId)?.name ?? '小動物') : '先點一隻動物')}</strong>
+          <span data-friend>${pet?.friend ? '好朋友' : ''}</span>
+          <span>好感 <b data-testid="affection">${pet?.affection ?? 0}</b></span>
+        </div>
+        ${meter('hunger', '飽肚', pet?.hunger ?? 0)}
+        ${meter('mood', '心情', pet?.mood ?? 0)}
+        ${meter('cleanliness', '清潔', pet?.cleanliness ?? 0)}
+        ${meter('affection', '好感', pet?.affection ?? 0)}
+        <div class="row-actions">
+          <button class="primary" type="button" data-action="care" data-care="feed" data-testid="care-feed">餵食</button>
+          <button class="primary" type="button" data-action="care" data-care="pet" data-testid="care-pet">撫摸</button>
+          <button class="ghost" type="button" data-action="care" data-care="clean" data-testid="care-clean">清潔</button>
+          <button class="ghost" type="button" data-action="come-closer">過來</button>
+        </div>
+        <p data-care-note>${esc(this.careNote)}</p>
+      </div>
+    </section>`;
+  }
+
   private farmHtml(): string {
     const ownedIds = new Set(this.save.animals.map((item) => item.speciesId));
     const list = SPECIES.filter((species) => {
@@ -1250,6 +1454,7 @@ class App {
           <h2>動物飼養場</h2>
           <p class="lede">已遇見 ${ownedIds.size} / ${SPECIES.length} 種 · 動物 ${this.save.animals.length} 隻 · 合成 ${this.save.stats.merges} 次</p>
         </div>
+        <button class="primary" type="button" data-action="go-pasture">進入 3D 牧場</button>
       </div>
       <div class="chips">${filters
         .map(
@@ -1414,6 +1619,10 @@ class App {
       ${this.authError ? `<p class="hint warn" data-testid="auth-error">${esc(this.authError)}</p>` : ''}
     </div>`;
   }
+}
+
+function meter(key: string, label: string, value: number): string {
+  return `<label class="meter-row"><span>${label}</span><span class="meter"><span data-meter="${key}" style="width:${value}%"></span></span></label>`;
 }
 
 function mysteryArt(): string {

@@ -71,6 +71,7 @@ describe('account progress merge', () => {
       stats: { correct: 1, answered: 2, pulls: 0, merges: 0 },
     });
     expect(parsed?.solo).toEqual({ mastered: [], rounds: 0 });
+    expect(parsed?.pasture.placed).toEqual([]);
     expect(parsed?.coins).toBe(5);
     expect(normalizeSave({ v: 1, animals: [{ uid: 'x', speciesId: 'nope', stars: 9 }] })?.animals).toEqual([]);
   });

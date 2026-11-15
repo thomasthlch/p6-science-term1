@@ -77,6 +77,7 @@ export async function saveCloudSave(uid: string, data: SaveData): Promise<void> 
     animals: data.animals,
     stats: data.stats,
     solo: data.solo,
+    pasture: data.pasture,
     updatedAt: serverTimestamp(),
   });
 }
