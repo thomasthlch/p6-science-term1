@@ -894,8 +894,8 @@ class App {
       </button>
       <div class="top-actions">
         ${this.accountControls()}
-        <button class="nav-btn" type="button" data-action="go-farm">飼養場</button>
-        <button class="nav-btn" type="button" data-action="go-gacha">孵蛋</button>
+        <button class="nav-btn" type="button" data-action="go-farm">${lineIcon('paw')}飼養場</button>
+        <button class="nav-btn" type="button" data-action="go-gacha">${lineIcon('egg')}孵蛋</button>
         <span class="coin-pill ${bump ? 'bump' : ''}" data-testid="coins">${coinSvg()}<strong>${this.save.coins}</strong><small>科學幣</small></span>
       </div>
     </header>`;
@@ -919,24 +919,24 @@ class App {
         <p class="lede">答對題目賺科學幣，孵出小動物，三隻相同星級可以合成升級。未登入也可以玩。</p>
         ${this.loginBanner()}
         <div class="topic-row">
-          ${TOPIC_ORDER.map((id) => `<span class="pill">${esc(TOPIC_LABEL[id])}</span>`).join('')}
+          ${TOPIC_ORDER.map((id) => `<span class="pill">${topicIcon(id)}${esc(TOPIC_LABEL[id])}</span>`).join('')}
         </div>
       </div>
       <div class="mode-grid">
         <button class="mode-card solo" type="button" data-action="go-solo">
-          <span class="mode-kicker">自己的節奏</span>
+          <span class="mode-kicker">${lineIcon('user')}自己的節奏</span>
           <strong>個人溫習</strong>
           <span>每題有倒數。答得愈快，科學幣愈多。答錯沒有科學幣，仍會看短解說。</span>
         </button>
         <button class="mode-card board" type="button" data-action="go-board">
-          <span class="mode-kicker">智慧板 · 三人同時</span>
+          <span class="mode-kicker">${lineIcon('users')}智慧板 · 三人同時</span>
           <strong>白板三人</strong>
           <span>同一題、三欄同時作答。愈快答對分數愈高。這局不發科學幣。</span>
         </button>
       </div>
       <div class="quick-grid">
-        <button class="quick" type="button" data-action="go-gacha"><strong>孵蛋</strong><span>用科學幣打開一隻蛋</span></button>
-        <button class="quick" type="button" data-action="go-farm"><strong>動物飼養場</strong><span>已遇見 ${owned} / ${SPECIES.length} 種</span></button>
+        <button class="quick" type="button" data-action="go-gacha">${lineIcon('egg')}<span><strong>孵蛋</strong><span>用科學幣打開一隻蛋</span></span></button>
+        <button class="quick" type="button" data-action="go-farm">${lineIcon('paw')}<span><strong>動物飼養場</strong><span>已遇見 ${owned} / ${SPECIES.length} 種</span></span></button>
       </div>
       <div class="parade" aria-hidden="true">${parade}</div>
       <ol class="steps">
@@ -993,11 +993,14 @@ class App {
       .join('');
     const gain = revealed ? solo.lastGain : 0;
     const speed = revealed && solo.lastCorrect ? soloSpeedWord(solo.lastElapsed, SOLO_LIMIT_MS) : '';
+    const answered = solo.cursor + (revealed ? 1 : 0);
     return `<section class="panel play" data-testid="solo-question" data-qid="${question.id}">
+      ${progressBar(answered, solo.queue.length)}
+      <div class="callout exam">${lineIcon('book')}<span><b>考試重點</b> ${esc(topicName(question.topic))}</span></div>
       <div class="play-top">
         <span class="tag">${esc(topicName(solo.topic))}${solo.retrying ? ' · 再練' : ''}</span>
         <span class="progress">第 ${solo.cursor + 1} / ${solo.queue.length} 題</span>
-        <span class="solo-timer ${this.soloSecondsLeft() <= 5 ? 'urgent' : ''}"><strong data-solo-timer>${revealed ? '✓' : this.soloSecondsLeft()}</strong></span>
+        <span class="solo-timer ${!revealed && this.soloSecondsLeft() <= 5 ? 'urgent' : ''}"><strong data-solo-timer>${revealed ? (solo.lastCorrect ? '✓' : '–') : this.soloSecondsLeft()}</strong></span>
         <span class="who">${esc(solo.name)}</span>
       </div>
       <h2 class="prompt">${esc(question.prompt)}</h2>
@@ -1012,8 +1015,12 @@ class App {
       ${
         revealed
           ? `<div class="explain ${solo.lastCorrect ? 'good' : 'soft'}" data-testid="explain">
-              <strong>${solo.lastCorrect ? speed : '差一點點'}</strong>
-              <p>${esc(question.explain)}</p>
+              ${solo.lastCorrect ? confetti() : ''}
+              <div class="callout ${solo.lastCorrect ? 'principle' : 'pitfall'}">
+                <span class="callout-k">${lineIcon(solo.lastCorrect ? 'bulb' : 'alert')}${solo.lastCorrect ? '科學原理' : '易錯提醒'}</span>
+                <strong>${solo.lastCorrect ? `${speed} 繼續保持。` : '差一點點，看看下面就明白。'}</strong>
+                <p>${esc(question.explain)}</p>
+              </div>
               ${gain ? `<p class="gain" data-testid="coin-gain">科學幣 +${gain}</p>` : '<p class="gain soft">這題沒有科學幣。看看解說，等一下可以再練。</p>'}
               <button class="primary" type="button" data-action="solo-next">${last ? '看這一輪結果' : '下一題'}</button>
             </div>`
@@ -1116,6 +1123,7 @@ class App {
       .join('');
     const last = board.index >= board.questions.length - 1;
     return `<section class="board-play" data-testid="board" data-qid="${question.id}">
+      ${progressBar(board.index + 1, board.questions.length)}
       <header class="board-top">
         <button class="tiny" type="button" data-action="go-home">主頁</button>
         <div class="board-title">
@@ -1134,7 +1142,8 @@ class App {
         <h2 class="board-q">${esc(question.prompt)}</h2>
         ${
           revealed
-            ? `<div class="board-explain" data-testid="board-explain">
+            ? `<div class="board-explain callout principle" data-testid="board-explain">
+                <span class="callout-k">${lineIcon('bulb')}科學原理</span>
                 <p>${esc(question.explain)}</p>
                 <button class="primary" type="button" data-action="board-next">${last ? '看結算' : '下一題'}</button>
               </div>`
@@ -1409,6 +1418,40 @@ class App {
 
 function mysteryArt(): string {
   return `<div class="mystery" role="img" aria-label="尚未遇見的動物"><span class="mystery-mark">？</span></div>`;
+}
+
+function lineIcon(name: string): string {
+  const paths: Record<string, string> = {
+    flask: '<path d="M9 3h6"/><path d="M10 9V3"/><path d="M14 9V3"/><path d="M8.5 9h7L19 19a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/>',
+    user: '<circle cx="12" cy="8" r="3"/><path d="M5 19c1.4-3 3.8-4.5 7-4.5S17.6 16 19 19"/>',
+    users: '<circle cx="9" cy="8" r="2.5"/><circle cx="17" cy="9" r="2"/><path d="M3.5 19c1-2.6 2.8-4 5.5-4s4.5 1.4 5.5 4"/><path d="M14 15c1.8.2 3.2 1.2 4.2 3.2"/>',
+    egg: '<path d="M12 20.5c3.6 0 6-3 6-6.8C18 8.2 15.2 3.5 12 3.5S6 8.2 6 13.7c0 3.8 2.4 6.8 6 6.8z"/>',
+    paw: '<circle cx="7.5" cy="8" r="1.4"/><circle cx="12" cy="6.2" r="1.4"/><circle cx="16.5" cy="8" r="1.4"/><path d="M8 14.2c.2-2 1.6-3.2 4-3.2s3.8 1.2 4 3.2c.2 2.2-1.4 4.3-4 4.3s-4.2-2.1-4-4.3z"/>',
+    book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"/><path d="M4 5.5V21"/>',
+    bulb: '<path d="M9 18h6"/><path d="M10 21h4"/><path d="M8.2 14a5 5 0 1 1 7.6 0c-.7.8-1.3 1.5-1.3 2.8h-5c0-1.3-.6-2-1.3-2.8z"/>',
+    alert: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 4.8 2.8 18a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 4.8a2 2 0 0 0-3.4 0z"/>',
+    plus: '<circle cx="12" cy="12" r="8"/><path d="M12 8v8"/><path d="M8 12h8"/>',
+    bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>',
+    move: '<path d="M12 3v18"/><path d="M5 10l7-7 7 7"/><path d="M8 14H4v6h6v-4"/>',
+  };
+  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths[name] ?? paths.flask}</svg>`;
+}
+
+function topicIcon(topic: TopicId | 'mix'): string {
+  if (topic === 'firstaid') return lineIcon('plus');
+  if (topic === 'rescue') return lineIcon('alert');
+  if (topic === 'energy') return lineIcon('bolt');
+  if (topic === 'force') return lineIcon('move');
+  return lineIcon('flask');
+}
+
+function progressBar(current: number, total: number): string {
+  const pct = total === 0 ? 0 : Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+  return `<div class="quiz-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${current}"><span style="width:${pct}%"></span></div>`;
+}
+
+function confetti(): string {
+  return `<div class="confetti" aria-hidden="true">${Array.from({ length: 12 }, (_, index) => `<i style="--i:${index}"></i>`).join('')}</div>`;
 }
 
 function soloSpeedWord(elapsedMs: number, limitMs: number): string {
