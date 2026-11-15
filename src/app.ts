@@ -1,15 +1,17 @@
 import {
-  EGGS,
+  PULL_COST,
   RARITY_LABEL,
   SPECIES,
+  TEN_PULL_COST,
+  TEN_PULL_COUNT,
   animalSvg,
   eggSvg,
   rollSpecies,
   speciesById,
-  type EggOffer,
   type Rarity,
   type Species,
 } from './animals';
+import { authErrorText, finishRedirectSignIn, loadCloudSave, saveCloudSave, signInGoogle, signOutGoogle, watchAuth } from './cloud';
 import {
   BOARD_LIMIT_MS,
   BOARD_ROUND,
@@ -27,7 +29,7 @@ import {
   type Star,
 } from './logic';
 import { QUESTIONS } from './questions';
-import { loadSave, writeSave, type SaveData } from './storage';
+import { emptySave, loadSave, mergeSaves, writeSave, type SaveData } from './storage';
 import { TOPIC_LABEL, TOPIC_ORDER, type Choice, type Question, type TopicId } from './types';
 
 type RouteName = 'home' | 'solo' | 'board' | 'farm' | 'gacha';
@@ -49,6 +51,7 @@ interface SoloState {
   coins: number;
   lastCorrect: boolean;
   note: string;
+  roundCounted: boolean;
 }
 
 interface BoardPlayer {
@@ -84,9 +87,16 @@ interface ResetModal {
 
 interface HatchState {
   phase: 'wobble' | 'reveal';
-  species: Species;
-  egg: EggOffer;
+  pulls: Species[];
 }
+
+interface Account {
+  uid: string;
+  name: string;
+  preview?: boolean;
+}
+
+type SyncState = 'local' | 'saving' | 'synced' | 'error';
 
 const COL_NAME = ['同學一', '同學二', '同學三'] as const;
 
@@ -166,6 +176,12 @@ class App {
   private timer: number | null = null;
   private hatchTimer: number | null = null;
   private renderedCoins = -1;
+  private account: Account | null = null;
+  private hadAccount = false;
+  private syncState: SyncState = 'local';
+  private authError = '';
+  private authBusy = false;
+  private cloudTimer: number | null = null;
 
   constructor(private root: HTMLElement) {
     this.save = loadSave();
@@ -178,6 +194,11 @@ class App {
     this.root.addEventListener('input', this.onInput);
     this.root.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('hashchange', this.onHash);
+    this.applyPreviewAccount();
+    void finishRedirectSignIn();
+    watchAuth((user) => {
+      void this.onAuth(user);
+    });
     this.render();
   }
 
@@ -256,11 +277,14 @@ class App {
       this.modal = { kind: 'reset' };
       this.render();
     } else if (action === 'reset-yes') {
-      this.save = { v: 1, coins: 0, animals: [], stats: { correct: 0, answered: 0, pulls: 0, merges: 0 } };
-      writeSave(this.save);
+      this.save = emptySave();
+      this.persist();
       this.modal = null;
       this.render();
-    } else if (action === 'buy-egg') this.buyEgg(actionEl.dataset.egg ?? '');
+    } else if (action === 'pull-one') void this.buyPull('single');
+    else if (action === 'pull-ten') void this.buyPull('ten');
+    else if (action === 'sign-in') void this.signIn();
+    else if (action === 'sign-out') void this.signOutAccount();
     else if (action === 'close-hatch') {
       this.hatch = null;
       this.render();
@@ -320,6 +344,7 @@ class App {
       coins: 0,
       lastCorrect: false,
       note: '',
+      roundCounted: false,
     };
     this.route = 'solo';
     if (location.hash !== '#/solo') location.hash = '#/solo';
@@ -363,12 +388,16 @@ class App {
     solo.totalCount += 1;
     solo.coins += gain;
     solo.phase = 'explain';
-    if (correct) solo.correctCount += 1;
-    else solo.missed.push(question);
+    if (correct) {
+      solo.correctCount += 1;
+      if (!this.save.solo.mastered.includes(question.id)) {
+        this.save.solo.mastered = [...this.save.solo.mastered, question.id];
+      }
+    } else solo.missed.push(question);
     this.save.coins += gain;
     this.save.stats.answered += 1;
     if (correct) this.save.stats.correct += 1;
-    writeSave(this.save);
+    this.persist();
     this.render();
   }
 
@@ -378,6 +407,11 @@ class App {
     solo.cursor += 1;
     const next = solo.queue[solo.cursor];
     if (!next) {
+      if (!solo.retrying && !solo.roundCounted) {
+        this.save.solo.rounds += 1;
+        solo.roundCounted = true;
+        this.persist();
+      }
       solo.phase = 'summary';
       this.render();
       return;
@@ -543,7 +577,7 @@ class App {
       this.save.stats.answered += 1;
       if (correct) this.save.stats.correct += 1;
     }
-    writeSave(this.save);
+    this.persist();
     this.render();
   }
 
@@ -586,7 +620,7 @@ class App {
     if (!result.created) return;
     this.save.animals = result.list;
     this.save.stats.merges += 1;
-    writeSave(this.save);
+    this.persist();
     this.modal = {
       kind: 'animal',
       speciesId,
@@ -596,23 +630,147 @@ class App {
     this.render();
   }
 
-  private buyEgg(id: string): void {
+  private buyPull(kind: 'single' | 'ten'): void {
     if (this.hatch) return;
-    const egg = EGGS.find((item) => item.id === id);
-    if (!egg || this.save.coins < egg.cost) return;
-    const species = rollSpecies(egg);
-    this.save.coins -= egg.cost;
-    this.save.animals.push({ uid: newUid(), speciesId: species.id, stars: 1 });
-    this.save.stats.pulls += 1;
-    writeSave(this.save);
-    this.hatch = { phase: 'wobble', species, egg };
+    const cost = kind === 'single' ? PULL_COST : TEN_PULL_COST;
+    const count = kind === 'single' ? 1 : TEN_PULL_COUNT;
+    if (this.save.coins < cost) return;
+    const pulls: Species[] = [];
+    this.save.coins -= cost;
+    for (let index = 0; index < count; index += 1) {
+      const species = rollSpecies();
+      pulls.push(species);
+      this.save.animals.push({ uid: newUid(), speciesId: species.id, stars: 1 });
+    }
+    this.save.stats.pulls += count;
+    this.persist();
+    this.hatch = { phase: 'wobble', pulls };
     this.render();
     this.clearHatchTimer();
     this.hatchTimer = window.setTimeout(() => {
       if (!this.hatch) return;
       this.hatch.phase = 'reveal';
       this.render();
-    }, 1300);
+    }, 1100);
+  }
+
+  private persist(): void {
+    writeSave(this.save);
+    this.scheduleCloud();
+  }
+
+  private scheduleCloud(): void {
+    if (!this.account || this.account.preview) return;
+    this.syncState = 'saving';
+    if (this.cloudTimer !== null) window.clearTimeout(this.cloudTimer);
+    this.cloudTimer = window.setTimeout(() => {
+      void this.pushCloud();
+    }, 400);
+  }
+
+  private async pushCloud(): Promise<void> {
+    const account = this.account;
+    if (!account || account.preview) return;
+    try {
+      await saveCloudSave(account.uid, this.save);
+      if (this.account?.uid === account.uid) this.syncState = 'synced';
+    } catch (error) {
+      if (this.account?.uid === account.uid) {
+        this.syncState = 'error';
+        this.authError = authErrorText(error);
+      }
+    }
+    if (!document.body.classList.contains('mode-board')) this.render();
+  }
+
+  private applyPreviewAccount(): void {
+    if (!import.meta.env.DEV) return;
+    if (new URLSearchParams(location.search).get('previewAccount') !== '1') return;
+    this.account = { uid: 'preview', name: '小明', preview: true };
+    this.syncState = 'synced';
+    this.save = {
+      ...emptySave(),
+      coins: 120,
+      animals: [
+        { uid: 'p1', speciesId: 'chick', stars: 3 },
+        { uid: 'p2', speciesId: 'rabbit', stars: 1 },
+        { uid: 'p3', speciesId: 'duck', stars: 1 },
+        { uid: 'p4', speciesId: 'fox', stars: 2 },
+      ],
+      stats: { correct: 8, answered: 10, pulls: 4, merges: 1 },
+      solo: { mastered: ['fa01', 'fa02'], rounds: 2 },
+    };
+  }
+
+  private async onAuth(user: { uid: string; displayName: string | null } | null): Promise<void> {
+    if (this.account?.preview && !user) return;
+    if (!user) {
+      if (!this.hadAccount) return;
+      this.hadAccount = false;
+      this.account = null;
+      this.syncState = 'local';
+      this.save = emptySave();
+      writeSave(this.save);
+      this.render();
+      return;
+    }
+    const name = (user.displayName || '同學').replace(/\s+/g, '').slice(0, 12) || '同學';
+    this.account = { uid: user.uid, name };
+    this.hadAccount = true;
+    this.syncState = 'saving';
+    this.authError = '';
+    if (!document.body.classList.contains('mode-board')) this.render();
+    try {
+      const cloud = await loadCloudSave(user.uid);
+      if (this.account?.uid !== user.uid) return;
+      this.save = mergeSaves(this.save, cloud);
+      writeSave(this.save);
+      await saveCloudSave(user.uid, this.save);
+      if (this.account?.uid === user.uid) this.syncState = 'synced';
+    } catch (error) {
+      if (this.account?.uid === user.uid) {
+        this.syncState = 'error';
+        this.authError = authErrorText(error);
+      }
+    }
+    if (!document.body.classList.contains('mode-board')) this.render();
+  }
+
+  private async signIn(): Promise<void> {
+    if (this.authBusy || this.account) return;
+    this.authBusy = true;
+    this.authError = '';
+    this.render();
+    try {
+      await signInGoogle();
+    } catch (error) {
+      this.authError = authErrorText(error);
+    } finally {
+      this.authBusy = false;
+      if (!document.body.classList.contains('mode-board')) this.render();
+    }
+  }
+
+  private async signOutAccount(): Promise<void> {
+    if (this.account?.preview) {
+      this.account = null;
+      this.syncState = 'local';
+      this.save = emptySave();
+      writeSave(this.save);
+      this.render();
+      return;
+    }
+    try {
+      if (this.cloudTimer !== null) {
+        window.clearTimeout(this.cloudTimer);
+        this.cloudTimer = null;
+        await this.pushCloud();
+      }
+      await signOutGoogle();
+    } catch (error) {
+      this.authError = authErrorText(error);
+      this.render();
+    }
   }
 
   private clearTimer(): void {
@@ -649,6 +807,7 @@ class App {
         <span class="brand-text"><strong>小六科學溫習站</strong><small>上學期科學農場</small></span>
       </button>
       <div class="top-actions">
+        ${this.accountControls()}
         <button class="nav-btn" type="button" data-action="go-farm">飼養場</button>
         <button class="nav-btn" type="button" data-action="go-gacha">孵蛋</button>
         <span class="coin-pill ${bump ? 'bump' : ''}" data-testid="coins">${coinSvg()}<strong>${this.save.coins}</strong><small>科學幣</small></span>
@@ -671,7 +830,8 @@ class App {
       <div class="hero">
         <p class="eyebrow">香港小學六年級 · 上學期</p>
         <h1>科學農場溫習站</h1>
-        <p class="lede">答對題目賺科學幣，孵出小動物，三隻相同星級可以合成升級。進度只存在這部裝置。</p>
+        <p class="lede">答對題目賺科學幣，孵出小動物，三隻相同星級可以合成升級。未登入也可以玩。</p>
+        ${this.loginBanner()}
         <div class="topic-row">
           ${TOPIC_ORDER.map((id) => `<span class="pill">${esc(TOPIC_LABEL[id])}</span>`).join('')}
         </div>
@@ -698,7 +858,7 @@ class App {
         <li>答對得到科學幣，錯了會看到簡短解說。</li>
         <li>三隻完全相同的一星合成二星，三隻二星合成三星。</li>
       </ol>
-      <p class="note">題庫 ${QUESTIONS.length} 題 · 沒有班內排行榜 · 名字只在這一局顯示</p>
+      <p class="note">題庫 ${QUESTIONS.length} 題 · 已掌握 ${this.save.solo.mastered.length} 題 · 沒有班內排行榜 · 名字只在這一局顯示</p>
     </section>`;
   }
 
@@ -923,7 +1083,7 @@ class App {
       .join('');
     return `<section class="panel summary" data-testid="board-done">
       <h2>這一局完成了</h2>
-      <p class="lede">三位都辛苦了。科學幣已存入這部裝置，可以一起去孵蛋。</p>
+      <p class="lede">三位都辛苦了。科學幣已存好，可以一起去孵蛋。</p>
       <div class="done-grid">${cards}</div>
       <div class="row-actions">
         <button class="primary" type="button" data-action="start-board">再玩一局</button>
@@ -967,13 +1127,23 @@ class App {
             return `<div class="count-line"><span class="${stars === 3 ? 'starbar max' : 'starbar'}">${starGlyph(stars)}</span><b>×${count}</b>${button}</div>`;
           })
           .join('');
-        return `<article class="species-card ${owned ? '' : 'locked'} ${owned && best === 3 ? 'best3' : ''} rarity-${species.rarity}" data-action="open-animal" data-species="${species.id}" data-testid="species-${species.id}">
+        if (!owned) {
+          return `<article class="species-card locked" data-action="open-animal" data-species="${species.id}" data-testid="species-${species.id}">
+            <div class="art">${mysteryArt()}</div>
+            <div class="species-meta">
+              <span class="rarity unknown">未知</span>
+              <h3>？？？</h3>
+              <p class="missing">尚未遇見</p>
+            </div>
+          </article>`;
+        }
+        return `<article class="species-card ${best === 3 ? 'best3' : ''} rarity-${species.rarity}" data-action="open-animal" data-species="${species.id}" data-testid="species-${species.id}">
           <div class="art">${animalSvg(species)}</div>
           <div class="species-meta">
             <span class="rarity ${species.rarity}">${RARITY_LABEL[species.rarity]}</span>
             <h3>${esc(species.name)}</h3>
             <p class="totem">${esc(species.totem)}徽章</p>
-            ${owned ? lines : '<p class="missing">未遇見</p>'}
+            ${lines}
           </div>
         </article>`;
       })
@@ -992,49 +1162,66 @@ class App {
         )
         .join('')}</div>
       <div class="farm-grid">${cards || '<p class="lede">這個分類還沒有動物。</p>'}</div>
-      <button class="danger" type="button" data-action="ask-reset">清空這部裝置上的農場</button>
+      <button class="danger" type="button" data-action="ask-reset">${this.account && !this.account.preview ? '清空這個帳號的農場' : '清空這部裝置上的農場'}</button>
     </section>`;
   }
 
   private gachaHtml(): string {
     if (this.hatch) return this.hatchHtml(this.hatch);
-    const cards = EGGS.map((egg) => {
-      const afford = this.save.coins >= egg.cost;
-      const rarityClass = egg.id === 'plain' ? 'egg-common' : egg.id === 'rare' ? 'egg-rare' : 'egg-super';
-      return `<article class="egg-card ${rarityClass}">
-        <div class="egg-graphic">${eggSvg()}</div>
-        <h3>${esc(egg.name)}</h3>
-        <p>${esc(egg.hint)}</p>
-        <button class="primary" type="button" data-action="buy-egg" data-egg="${egg.id}" ${afford ? '' : 'disabled'}>
-          ${afford ? `${egg.cost} 科學幣` : `還差 ${egg.cost - this.save.coins} 幣`}
-        </button>
-      </article>`;
-    }).join('');
+    const oneShort = Math.max(0, PULL_COST - this.save.coins);
+    const tenShort = Math.max(0, TEN_PULL_COST - this.save.coins);
     return `<section class="gacha" data-testid="gacha">
       <h2>孵蛋</h2>
-      <p class="lede">科學幣是這部裝置共用的。蛋殼顏色代表裡面的稀有度：普通是暖米色，稀有會發藍光，超稀有會發金光。孵出來都是一星，可以再合成。</p>
-      <div class="gacha-grid">${cards}</div>
-      <p class="note">每隻動物都是農場的好朋友。普通的也一樣可愛。</p>
+      <p class="lede">只有一種蛋。每抽 ${PULL_COST} 科學幣。十連抽 ${TEN_PULL_COST} 科學幣，會多送 1 抽，一共 ${TEN_PULL_COUNT} 隻。稀有度在孵出的動物身上：普通 70%、稀有 20%、超稀有 10%。</p>
+      <div class="gacha-shop">
+        <div class="egg-graphic egg-common">${eggSvg()}</div>
+        <div class="gacha-actions">
+          <button class="primary big" type="button" data-action="pull-one" data-testid="pull-one" ${oneShort ? 'disabled' : ''}>
+            ${oneShort ? `單抽還差 ${oneShort} 幣` : `單抽 · ${PULL_COST} 科學幣`}
+          </button>
+          <button class="primary big ten" type="button" data-action="pull-ten" data-testid="pull-ten" ${tenShort ? 'disabled' : ''}>
+            ${tenShort ? `十連抽還差 ${tenShort} 幣` : `十連抽（送多一抽）· ${TEN_PULL_COST} 科學幣`}
+          </button>
+        </div>
+      </div>
+      <p class="note">孵出來都是一星。三隻相同星級可以合成。每隻動物都是農場的好朋友。</p>
     </section>`;
   }
 
   private hatchHtml(hatch: HatchState): string {
-    const rarity = hatch.species.rarity;
     if (hatch.phase === 'wobble') {
-      return `<section class="hatch wobble egg-${rarity === 'common' ? 'common' : rarity === 'rare' ? 'rare' : 'super'}" data-testid="hatch">
+      return `<section class="hatch wobble egg-common" data-testid="hatch">
         <div class="egg-graphic">${eggSvg()}</div>
-        <p class="lede">蛋在輕輕搖晃…</p>
+        <p class="lede">${hatch.pulls.length > 1 ? `${hatch.pulls.length} 隻蛋在輕輕搖晃…` : '蛋在輕輕搖晃…'}</p>
       </section>`;
     }
-    return `<section class="hatch reveal egg-${rarity === 'common' ? 'common' : rarity === 'rare' ? 'rare' : 'super'}" data-testid="egg-reveal">
-      <div class="reveal-row">
-        <div class="egg-graphic">${eggSvg()}</div>
-        <div class="reveal-art">${animalSvg(hatch.species)}</div>
-      </div>
-      <p class="rarity ${rarity}">${RARITY_LABEL[rarity]} · ${esc(hatch.species.totem)}徽章</p>
-      <h2>${esc(hatch.species.name)}</h2>
-      <p class="lede">${esc(hatch.species.blurb)}</p>
-      <p class="starbar">★☆☆ · 一星新朋友</p>
+    if (hatch.pulls.length === 1) {
+      const species = hatch.pulls[0];
+      if (!species) return '';
+      return `<section class="hatch reveal egg-${species.rarity}" data-testid="egg-reveal">
+        <div class="reveal-row">
+          <div class="egg-graphic">${eggSvg()}</div>
+          <div class="reveal-art">${animalSvg(species)}</div>
+        </div>
+        <p class="rarity ${species.rarity}">${RARITY_LABEL[species.rarity]} · ${esc(species.totem)}徽章</p>
+        <h2>${esc(species.name)}</h2>
+        <p class="lede">${esc(species.blurb)}</p>
+        <p class="starbar">★☆☆ · 一星新朋友</p>
+        <button class="primary big" type="button" data-action="close-hatch">收進飼養場</button>
+      </section>`;
+    }
+    const cards = hatch.pulls
+      .map(
+        (species) => `<article class="pull-card rarity-${species.rarity}">
+          <div class="art">${animalSvg(species)}</div>
+          <span class="rarity ${species.rarity}">${RARITY_LABEL[species.rarity]}</span>
+          <strong>${esc(species.name)}</strong>
+        </article>`,
+      )
+      .join('');
+    return `<section class="hatch reveal multi" data-testid="egg-reveal">
+      <h2>十連抽 · ${hatch.pulls.length} 隻新朋友</h2>
+      <div class="pull-grid">${cards}</div>
       <button class="primary big" type="button" data-action="close-hatch">收進飼養場</button>
     </section>`;
   }
@@ -1046,7 +1233,7 @@ class App {
       return `<div class="modal-back" data-action="close-modal">
         <div class="modal" data-modal-card role="dialog" aria-modal="true">
           <h3>清空農場？</h3>
-          <p>科學幣和動物會從這部裝置刪除。題目不會消失。</p>
+          <p>${this.account && !this.account.preview ? '這個帳號的科學幣和動物會從雲端和這部裝置刪除。題目不會消失。' : '科學幣和動物會從這部裝置刪除。已登入帳號的雲端進度不會受影響。題目不會消失。'}</p>
           <div class="row-actions">
             <button class="danger" type="button" data-action="reset-yes">確定清空</button>
             <button class="ghost" type="button" data-close data-action="close-modal">保留</button>
@@ -1058,17 +1245,54 @@ class App {
     if (!species) return '';
     const owned = this.save.animals.filter((item) => item.speciesId === species.id);
     const have = owned.length > 0;
+    if (!have) {
+      return `<div class="modal-back" data-action="close-modal">
+        <div class="modal animal" data-modal-card data-testid="animal-modal" role="dialog" aria-modal="true">
+          <div class="modal-art">${mysteryArt()}</div>
+          <p class="rarity unknown">未知</p>
+          <h3>？？？</h3>
+          <p>還沒遇見這位朋友。答題孵蛋就有機會遇到。</p>
+          <button class="primary" type="button" data-close data-action="close-modal">關閉</button>
+        </div>
+      </div>`;
+    }
     return `<div class="modal-back" data-action="close-modal">
       <div class="modal animal rarity-${species.rarity} ${modal.stars === 3 ? 'best3' : ''}" data-modal-card data-testid="animal-modal" role="dialog" aria-modal="true">
         ${modal.banner ? `<p class="banner">${esc(modal.banner)}</p>` : ''}
         <div class="modal-art">${animalSvg(species)}</div>
         <p class="rarity ${species.rarity}">${RARITY_LABEL[species.rarity]} · ${esc(species.totem)}徽章</p>
         <h3>${esc(species.name)}</h3>
-        <p class="starbar ${modal.stars === 3 ? 'max' : ''}" data-testid="modal-stars">${have ? starGlyph(modal.stars) : '☆☆☆'}</p>
+        <p class="starbar ${modal.stars === 3 ? 'max' : ''}" data-testid="modal-stars">${starGlyph(modal.stars)}</p>
         <p>${esc(species.blurb)}</p>
-        <p class="note">${have ? `你有 ${owned.length} 隻，最高 ${starWord(modal.stars)}。` : '還未遇見。答題孵蛋就有機會遇到。'}</p>
+        <p class="note">你有 ${owned.length} 隻，最高 ${starWord(modal.stars)}。</p>
         <button class="primary" type="button" data-close data-action="close-modal">關閉</button>
       </div>
     </div>`;
   }
+
+  private accountControls(): string {
+    if (!this.account) {
+      return `<button class="nav-btn sign-in" type="button" data-action="sign-in" data-testid="sign-in-top" ${this.authBusy ? 'disabled' : ''}>用 Google 登入</button>`;
+    }
+    const label = this.syncState === 'saving' ? '同步中' : this.syncState === 'error' ? '未能同步' : '已同步';
+    return `<span class="account" data-testid="signed-in"><strong>${esc(this.account.name)}</strong><small>${label}</small></span><button class="nav-btn" type="button" data-action="sign-out">登出</button>`;
+  }
+
+  private loginBanner(): string {
+    if (this.account) {
+      return `<div class="login-banner synced">
+        <p>已登入 ${esc(this.account.name)}。科學幣、動物和已掌握的題目會跟住這個 Google 帳號。</p>
+        <button class="ghost" type="button" data-action="sign-out">登出</button>
+      </div>`;
+    }
+    return `<div class="login-banner" data-testid="login-banner">
+      <p>未登入也可以玩。登入 Google 後，科學幣、動物和個人溫習進度會跟住帳號，換裝置也不會不見。</p>
+      <button class="primary" type="button" data-action="sign-in" data-testid="sign-in" ${this.authBusy ? 'disabled' : ''}>用 Google 登入</button>
+      ${this.authError ? `<p class="hint warn" data-testid="auth-error">${esc(this.authError)}</p>` : ''}
+    </div>`;
+  }
+}
+
+function mysteryArt(): string {
+  return `<div class="mystery" role="img" aria-label="尚未遇見的動物"><span class="mystery-mark">？</span></div>`;
 }

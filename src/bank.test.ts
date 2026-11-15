@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EGGS, RARITY_LABEL, SPECIES, animalSvg, rollRarity, rollSpecies } from './animals';
+import { POOL_WEIGHTS, PULL_COST, RARITY_LABEL, SPECIES, TEN_PULL_COST, TEN_PULL_COUNT, animalSvg, rollRarity, rollSpecies } from './animals';
 import { boardCoins, isCorrect, mergeAnimals, pickQuestions, soloCoins } from './logic';
 import { QUESTIONS, bankStats } from './questions';
 import type { Question } from './types';
@@ -157,11 +157,14 @@ describe('rules', () => {
       expect(svg).toContain('translate(166,42)');
       expect(svg).not.toContain('©');
     }
-    const rareEgg = EGGS[1];
-    expect(rareEgg).toBeTruthy();
-    expect(rollRarity(rareEgg!.weights, () => 0)).toBe('common');
-    expect(rollRarity(rareEgg!.weights, () => 0.99)).toBe('super');
-    const pulled = rollSpecies(EGGS[2]!, () => 0.99);
+    expect(POOL_WEIGHTS).toEqual({ common: 70, rare: 20, super: 10 });
+    expect(PULL_COST).toBe(10);
+    expect(TEN_PULL_COST).toBe(100);
+    expect(TEN_PULL_COUNT).toBe(11);
+    expect(rollRarity(POOL_WEIGHTS, () => 0)).toBe('common');
+    expect(rollRarity(POOL_WEIGHTS, () => 0.75)).toBe('rare');
+    expect(rollRarity(POOL_WEIGHTS, () => 0.95)).toBe('super');
+    const pulled = rollSpecies(() => 0.99);
     expect(pulled.rarity).toBe('super');
   });
 });

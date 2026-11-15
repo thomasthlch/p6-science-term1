@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 貼進現有規則，不要整份取代。
+    // 控制台還有 dashboards/master_dashboard 和 eservice/courses，那些要保留。
+    match /p6science/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create, update: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.v == 1
+        && request.resource.data.coins is number
+        && request.resource.data.coins >= 0
+        && request.resource.data.animals is list
+        && request.resource.data.animals.size() <= 500
+        && request.resource.data.stats is map
+        && request.resource.data.solo is map;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

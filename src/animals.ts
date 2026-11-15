@@ -387,39 +387,18 @@ export function eggSvg(): string {
   </svg>`;
 }
 
-export interface EggOffer {
-  id: 'plain' | 'rare' | 'super';
-  name: string;
-  cost: number;
-  hint: string;
-  weights: Record<Rarity, number>;
-}
+/** One shared egg pool. Rarity is on the animal, not on separate eggs for sale. */
+export const POOL_WEIGHTS: Record<Rarity, number> = {
+  common: 70,
+  rare: 20,
+  super: 10,
+};
 
-export const EGGS: EggOffer[] = [
-  {
-    id: 'plain',
-    name: '普通蛋',
-    cost: 30,
-    hint: '多數是普通動物，偶爾有驚喜',
-    weights: { common: 78, rare: 19, super: 3 },
-  },
-  {
-    id: 'rare',
-    name: '稀有蛋',
-    cost: 80,
-    hint: '較容易孵出稀有動物',
-    weights: { common: 35, rare: 50, super: 15 },
-  },
-  {
-    id: 'super',
-    name: '超稀有蛋',
-    cost: 150,
-    hint: '最有機會遇見超稀有動物',
-    weights: { common: 10, rare: 40, super: 50 },
-  },
-];
+export const PULL_COST = 10;
+export const TEN_PULL_COST = 100;
+export const TEN_PULL_COUNT = 11;
 
-export function rollRarity(weights: Record<Rarity, number>, rng: () => number = Math.random): Rarity {
+export function rollRarity(weights: Record<Rarity, number> = POOL_WEIGHTS, rng: () => number = Math.random): Rarity {
   const total = weights.common + weights.rare + weights.super;
   let roll = rng() * total;
   if ((roll -= weights.common) < 0) return 'common';
@@ -427,8 +406,8 @@ export function rollRarity(weights: Record<Rarity, number>, rng: () => number = 
   return 'super';
 }
 
-export function rollSpecies(egg: EggOffer, rng: () => number = Math.random): Species {
-  const rarity = rollRarity(egg.weights, rng);
+export function rollSpecies(rng: () => number = Math.random): Species {
+  const rarity = rollRarity(POOL_WEIGHTS, rng);
   const pool = SPECIES.filter((item) => item.rarity === rarity);
   const index = Math.min(pool.length - 1, Math.floor(rng() * pool.length));
   return pool[index] ?? SPECIES[0];
